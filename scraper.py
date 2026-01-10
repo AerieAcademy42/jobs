@@ -5,8 +5,8 @@ import pandas as pd
 from supabase import create_client, Client
 
 # 1. Configuration
-SUPABASE_URL = os.environ.get("https://bkoniaoygybhrzlqmbnv.supabase.co")
-SUPABASE_KEY = os.environ.get("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJrb25pYW95Z3liaHJ6bHFtYm52Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1ODcyOTIyOSwiZXhwIjoyMDc0MzA1MjI5fQ.aWoCc-XWTcaVJcBpbexOyezBxSnJyssUwwVjc_A8brY")
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 SEARCH_QUERIES = [
