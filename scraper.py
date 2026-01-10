@@ -1,4 +1,5 @@
 import os
+import re
 from datetime import datetime, timezone
 import numpy as np
 from jobspy import scrape_jobs
@@ -6,9 +7,7 @@ import pandas as pd
 from supabase import create_client, Client
 
 # 1. Connection
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+supabase: Client = create_client(os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_KEY"))
 
 SEARCH_QUERIES = [
     "Architectural Assistant",
@@ -16,8 +15,25 @@ SEARCH_QUERIES = [
     "Urban Planning Intern",
     "Architectural Drafter",
     "Junior Architect",
-    "BIM Modeler"
+    "BIM Modeler",
+    "Interior Designer India"
 ]
+
+def extract_salary_from_text(text):
+    """Scans the job description for salary patterns like 3LPA, 25k, etc."""
+    if not text: return None
+    # Pattern looks for: ₹, INR, LPA, or patterns like 25,000 - 30,000
+    patterns = [
+        r"(?:₹|INR|Rs\.?)\s?(\d+(?:,\d+)*(?:\s?-\s?\d+(?:,\d+)*)?)", # ₹25,000 - 30,000
+        r"(\d+(?:\.\d+)?\s?LPA)", # 3.5 LPA
+        r"(\d+k\s?-\s?\d+k)", # 20k - 25k
+        r"Salary[:\s]+(\d+(?:,\d+)*)" # Salary: 20000
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return match.group(0)
+    return None
 
 def clean_employment_type(job_type):
     intern_types = ['part-time', 'internship', 'contract', 'temporary', 'volunteer']
@@ -28,13 +44,14 @@ def clean_employment_type(job_type):
 def run_scraper():
     all_jobs_list = []
     for query in SEARCH_QUERIES:
-        print(f"Searching for {query}...")
+        print(f"Searching {query}...")
         try:
+            # Google Jobs aggregates Naukri, Foundit, etc.
             jobs = scrape_jobs(
                 site_name=["indeed", "linkedin", "google"],
                 search_term=query,
                 location="India",
-                results_wanted=35, # Increased results
+                results_wanted=40, 
                 hours_old=72, 
                 country_indeed='India'
             )
@@ -50,24 +67,21 @@ def run_scraper():
     current_iso = now.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     for _, row in df.iterrows():
-        # 1. Improved Salary Logic
-        salary_val = "Not specified"
-        min_sal = row.get('min_amount')
-        max_sal = row.get('max_amount')
-        currency = row.get('currency') if row.get('currency') else "₹"
-        interval = row.get('interval') if row.get('interval') else ""
-
-        if min_sal and max_sal:
-            salary_val = f"{currency}{min_sal} - {max_sal} ({interval})"
-        elif min_sal:
-            salary_val = f"{currency}{min_sal} ({interval})"
+        # 1. Salary Logic: Check official field first, then scan description
+        official_salary = None
+        if row.get('min_amount'):
+            official_salary = f"₹{row['min_amount']} - {row['max_amount']}" if row.get('max_amount') else f"₹{row['min_amount']}"
         
-        # 2. Improved Description Logic (Prevents "None")
-        desc = row.get('description')
-        if desc and desc.strip() and desc.lower() != "none":
-            clean_desc = str(desc)[:1000]
+        description_text = str(row.get('description', ""))
+        found_salary = extract_salary_from_text(description_text)
+        
+        salary_to_show = official_salary if official_salary else (found_salary if found_salary else "Not specified")
+
+        # 2. Description Logic: Ensure it's never "None"
+        if description_text and len(description_text) > 20 and description_text.lower() != "none":
+            clean_desc = description_text[:1000]
         else:
-            clean_desc = "Visit the job link to view the full description and requirements."
+            clean_desc = f"Architecture opportunity at {row['company']}. Please visit the link for full job details and requirements."
 
         # Date Logic
         try:
@@ -84,10 +98,10 @@ def run_scraper():
             "title": str(row['title']),
             "companyName": str(row['company']) if row['company'] else "Not specified",
             "location": str(row['location']) if row['location'] else "India",
-            "salary": salary_val,
+            "salary": salary_to_show,
             "postedDate": posted_date,
             "applyUrl": str(row['job_url']),
-            "source": str(row['site']).replace('linkedin', 'LinkedIn').capitalize(),
+            "source": str(row['site']).capitalize(),
             "employmentType": clean_employment_type(row.get('job_type', "")),
             "discription": clean_desc,
             "industry": "Architecture",
@@ -97,9 +111,9 @@ def run_scraper():
         try:
             supabase.table("jobs").upsert(job_data, on_conflict="jobId").execute()
         except Exception as e:
-            print(f"Supabase error: {e}")
+            pass
 
-    print("Scrape and Upload Complete.")
+    print(f"Scrape Complete. Processed {len(df)} jobs.")
 
 if __name__ == "__main__":
     run_scraper()
