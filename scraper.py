@@ -34,7 +34,7 @@ def run_scraper():
                 site_name=["indeed", "linkedin", "google"],
                 search_term=query,
                 location="India",
-                results_wanted=30,
+                results_wanted=35, # Increased results
                 hours_old=72, 
                 country_indeed='India'
             )
@@ -50,6 +50,25 @@ def run_scraper():
     current_iso = now.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     for _, row in df.iterrows():
+        # 1. Improved Salary Logic
+        salary_val = "Not specified"
+        min_sal = row.get('min_amount')
+        max_sal = row.get('max_amount')
+        currency = row.get('currency') if row.get('currency') else "₹"
+        interval = row.get('interval') if row.get('interval') else ""
+
+        if min_sal and max_sal:
+            salary_val = f"{currency}{min_sal} - {max_sal} ({interval})"
+        elif min_sal:
+            salary_val = f"{currency}{min_sal} ({interval})"
+        
+        # 2. Improved Description Logic (Prevents "None")
+        desc = row.get('description')
+        if desc and desc.strip() and desc.lower() != "none":
+            clean_desc = str(desc)[:1000]
+        else:
+            clean_desc = "Visit the job link to view the full description and requirements."
+
         # Date Logic
         try:
             if row.get('date_posted'):
@@ -60,18 +79,17 @@ def run_scraper():
         except:
             posted_date = current_iso
 
-        # Data map - REMOVED experienceLevel and scrap date to prevent errors
         job_data = {
             "jobId": str(row['id']),
             "title": str(row['title']),
             "companyName": str(row['company']) if row['company'] else "Not specified",
             "location": str(row['location']) if row['location'] else "India",
-            "salary": f"₹{row['min_amount']}" if row.get('min_amount') else "Not specified",
+            "salary": salary_val,
             "postedDate": posted_date,
             "applyUrl": str(row['job_url']),
-            "source": str(row['site']).capitalize(),
+            "source": str(row['site']).replace('linkedin', 'LinkedIn').capitalize(),
             "employmentType": clean_employment_type(row.get('job_type', "")),
-            "discription": str(row.get('description', ""))[:1000],
+            "discription": clean_desc,
             "industry": "Architecture",
             "created_at": posted_date 
         }
@@ -79,7 +97,7 @@ def run_scraper():
         try:
             supabase.table("jobs").upsert(job_data, on_conflict="jobId").execute()
         except Exception as e:
-            print(f"Supabase error for {row['id']}: {e}")
+            print(f"Supabase error: {e}")
 
     print("Scrape and Upload Complete.")
 
