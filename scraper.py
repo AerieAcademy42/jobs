@@ -5,12 +5,11 @@ from jobspy import scrape_jobs
 import pandas as pd
 from supabase import create_client, Client
 
-# 1. Supabase Connection
+# 1. Connection
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# 2. Search Parameters
 SEARCH_QUERIES = [
     "Architectural Assistant",
     "Landscape Architecture Intern",
@@ -28,11 +27,9 @@ def clean_employment_type(job_type):
 
 def run_scraper():
     all_jobs_list = []
-    
     for query in SEARCH_QUERIES:
         print(f"Searching for {query}...")
         try:
-            # Using Indeed, LinkedIn, and Google for maximum coverage in India
             jobs = scrape_jobs(
                 site_name=["indeed", "linkedin", "google"],
                 search_term=query,
@@ -43,44 +40,27 @@ def run_scraper():
             )
             if not jobs.empty:
                 all_jobs_list.append(jobs)
-                print(f"Found {len(jobs)} jobs for {query}")
         except Exception as e:
-            print(f"Scraper error for {query}: {e}")
+            print(f"Error: {e}")
 
-    if not all_jobs_list:
-        print("No jobs found in this run.")
-        return
+    if not all_jobs_list: return
 
-    # Process results
-    df = pd.concat(all_jobs_list)
-    df = df.drop_duplicates(subset=['id'])
-    
-    # Critical Fix: Turn "NaN" floats into None so Supabase doesn't error
-    df = df.replace({np.nan: None})
-    
-    print(f"Total unique jobs to process: {len(df)}")
-
-    # Time tracking for date fixes
+    df = pd.concat(all_jobs_list).drop_duplicates(subset=['id']).replace({np.nan: None})
     now = datetime.now(timezone.utc)
-    current_iso_time = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    current_iso = now.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     for _, row in df.iterrows():
-        
-        # 3. Fix Date Formatting (Removes "NaN years ago")
+        # Date Logic
         try:
             if row.get('date_posted'):
                 p_date = pd.to_datetime(row['date_posted']).replace(tzinfo=timezone.utc)
-                # Prevent future dates from pinning to the top
-                if p_date > now:
-                    posted_date = current_iso_time
-                else:
-                    posted_date = p_date.strftime("%Y-%m-%dT%H:%M:%SZ")
+                posted_date = p_date.strftime("%Y-%m-%dT%H:%M:%SZ") if p_date <= now else current_iso
             else:
-                posted_date = current_iso_time
+                posted_date = current_iso
         except:
-            posted_date = current_iso_time
+            posted_date = current_iso
 
-        # 4. Map to your Supabase Schema
+        # Data map - REMOVED experienceLevel and scrap date to prevent errors
         job_data = {
             "jobId": str(row['id']),
             "title": str(row['title']),
@@ -91,15 +71,12 @@ def run_scraper():
             "applyUrl": str(row['job_url']),
             "source": str(row['site']).capitalize(),
             "employmentType": clean_employment_type(row.get('job_type', "")),
-            "discription": str(row.get('description', ""))[:1000], # Your DB spelling
+            "discription": str(row.get('description', ""))[:1000],
             "industry": "Architecture",
-            "experienceLevel": "Entry Level",
-            "scrap date": datetime.now().strftime("%Y-%m-%d"), # Matching your old n8n column
             "created_at": posted_date 
         }
 
         try:
-            # Upsert ensures no duplicates if jobId is unique/Primary Key
             supabase.table("jobs").upsert(job_data, on_conflict="jobId").execute()
         except Exception as e:
             print(f"Supabase error for {row['id']}: {e}")
