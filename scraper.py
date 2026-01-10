@@ -1,5 +1,6 @@
 import os
 from datetime import datetime, timezone
+import numpy as np
 from jobspy import scrape_jobs
 import pandas as pd
 from supabase import create_client, Client
@@ -9,7 +10,6 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Expanded search queries for more results
 SEARCH_QUERIES = [
     "Architectural Assistant",
     "Landscape Architecture Intern",
@@ -31,13 +31,13 @@ def run_scraper():
     for query in SEARCH_QUERIES:
         print(f"Searching for {query}...")
         try:
-            # Added more sites (google, glassdoor) to get more data
+            # Removed Glassdoor because it was blocking (403)
             jobs = scrape_jobs(
-                site_name=["indeed", "linkedin", "google", "glassdoor"],
+                site_name=["indeed", "linkedin", "google"],
                 search_term=query,
                 location="India",
-                results_wanted=20,
-                hours_old=72, # Looking at last 3 days to ensure we find jobs
+                results_wanted=25,
+                hours_old=72, 
                 country_indeed='India'
             )
             if not jobs.empty:
@@ -51,48 +51,53 @@ def run_scraper():
         return
 
     df = pd.concat(all_jobs_list)
-    df = df.drop_duplicates(subset=['id']) # Remove duplicates found across queries
+    df = df.drop_duplicates(subset=['id'])
     
+    # IMPORTANT: This replaces all "NaN" (Not a Number) with None 
+    # This fixes the "Out of range float values" error
+    df = df.replace({np.nan: None})
+
     print(f"Total unique jobs to process: {len(df)}")
 
     for _, row in df.iterrows():
-        # FIX FOR "NaN years ago": Ensure we have a valid ISO timestamp
-        # If the scraper doesn't find a date, we use the current time.
         now_iso = datetime.now(timezone.utc).isoformat()
         
+        # Date Handling
         try:
-            if pd.notnull(row.get('date_posted')):
-                # Convert the date_posted to a proper ISO string
+            if row.get('date_posted'):
                 posted_date = pd.to_datetime(row['date_posted']).isoformat()
             else:
                 posted_date = now_iso
         except:
             posted_date = now_iso
 
-        # Clean Description
-        raw_desc = row.get('description', "")
-        clean_desc = str(raw_desc)[:1000] if pd.notnull(raw_desc) else ""
+        # Salary Handling (Fixes the Float Error)
+        salary_val = "Not specified"
+        if row.get('min_amount') and row.get('max_amount'):
+            salary_val = f"₹{row['min_amount']} - ₹{row['max_amount']}"
+        elif row.get('min_amount'):
+            salary_val = f"₹{row['min_amount']}"
 
         job_data = {
             "jobId": str(row['id']),
-            "title": row['title'],
-            "companyName": row['company'] or "Not specified",
-            "location": row['location'] or "India",
-            "salary": f"{row['min_amount']} - {row['max_amount']}" if row.get('min_amount') else "Not specified",
+            "title": str(row['title']),
+            "companyName": str(row['company']) if row['company'] else "Not specified",
+            "location": str(row['location']) if row['location'] else "India",
+            "salary": salary_val,
             "postedDate": posted_date,
-            "applyUrl": row['job_url'],
-            "source": row['site'],
+            "applyUrl": str(row['job_url']),
+            "source": str(row['site']),
             "employmentType": clean_employment_type(row.get('job_type', "")),
-            "discription": clean_desc,
+            "discription": str(row.get('description', ""))[:1000],
             "industry": "Architecture",
-            "created_at": posted_date # Frontend usually uses created_at for the "X days ago"
+            "created_at": posted_date
         }
 
         try:
-            # on_conflict="jobId" ensures we update old jobs and add new ones
             supabase.table("jobs").upsert(job_data, on_conflict="jobId").execute()
         except Exception as e:
-            print(f"Supabase Error: {e}")
+            # Printing the error help us see which specific field is failing
+            print(f"Supabase Error for job {row['id']}: {e}")
 
     print("Scrape and Upload Complete.")
 
