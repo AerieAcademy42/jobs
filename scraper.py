@@ -5,11 +5,12 @@ from jobspy import scrape_jobs
 import pandas as pd
 from supabase import create_client, Client
 
-# 1. Configuration
+# 1. Supabase Connection
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# 2. Search Parameters
 SEARCH_QUERIES = [
     "Architectural Assistant",
     "Landscape Architecture Intern",
@@ -27,44 +28,59 @@ def clean_employment_type(job_type):
 
 def run_scraper():
     all_jobs_list = []
-
+    
     for query in SEARCH_QUERIES:
         print(f"Searching for {query}...")
         try:
+            # Using Indeed, LinkedIn, and Google for maximum coverage in India
             jobs = scrape_jobs(
                 site_name=["indeed", "linkedin", "google"],
                 search_term=query,
                 location="India",
-                results_wanted=25,
+                results_wanted=30,
                 hours_old=72, 
                 country_indeed='India'
             )
             if not jobs.empty:
                 all_jobs_list.append(jobs)
+                print(f"Found {len(jobs)} jobs for {query}")
         except Exception as e:
-            print(f"Error scraping {query}: {e}")
+            print(f"Scraper error for {query}: {e}")
 
     if not all_jobs_list:
+        print("No jobs found in this run.")
         return
 
+    # Process results
     df = pd.concat(all_jobs_list)
     df = df.drop_duplicates(subset=['id'])
+    
+    # Critical Fix: Turn "NaN" floats into None so Supabase doesn't error
     df = df.replace({np.nan: None})
+    
+    print(f"Total unique jobs to process: {len(df)}")
+
+    # Time tracking for date fixes
+    now = datetime.now(timezone.utc)
+    current_iso_time = now.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     for _, row in df.iterrows():
-        # 1. FIXING THE "NaN" DATE ERROR:
-        # We use a very clean date format that JavaScript understands perfectly.
-        now = datetime.now(timezone.utc)
-        clean_timestamp = now.strftime("%Y-%m-%dT%H:%M:%S+00:00")
         
+        # 3. Fix Date Formatting (Removes "NaN years ago")
         try:
             if row.get('date_posted'):
-                posted_date = pd.to_datetime(row['date_posted']).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+                p_date = pd.to_datetime(row['date_posted']).replace(tzinfo=timezone.utc)
+                # Prevent future dates from pinning to the top
+                if p_date > now:
+                    posted_date = current_iso_time
+                else:
+                    posted_date = p_date.strftime("%Y-%m-%dT%H:%M:%SZ")
             else:
-                posted_date = clean_timestamp
+                posted_date = current_iso_time
         except:
-            posted_date = clean_timestamp
+            posted_date = current_iso_time
 
+        # 4. Map to your Supabase Schema
         job_data = {
             "jobId": str(row['id']),
             "title": str(row['title']),
@@ -75,17 +91,18 @@ def run_scraper():
             "applyUrl": str(row['job_url']),
             "source": str(row['site']).capitalize(),
             "employmentType": clean_employment_type(row.get('job_type', "")),
-            "discription": str(row.get('description', ""))[:1000],
+            "discription": str(row.get('description', ""))[:1000], # Your DB spelling
             "industry": "Architecture",
-            "experienceLevel": "Entry Level", # Added because n8n had it
-            "scrap date": datetime.now().strftime("%Y-%m-%d"), # Added exactly as n8n had it
-            "created_at": posted_date # Match created_at with postedDate
+            "experienceLevel": "Entry Level",
+            "scrap date": datetime.now().strftime("%Y-%m-%d"), # Matching your old n8n column
+            "created_at": posted_date 
         }
 
         try:
+            # Upsert ensures no duplicates if jobId is unique/Primary Key
             supabase.table("jobs").upsert(job_data, on_conflict="jobId").execute()
         except Exception as e:
-            print(f"Error: {e}")
+            print(f"Supabase error for {row['id']}: {e}")
 
     print("Scrape and Upload Complete.")
 
