@@ -2,8 +2,10 @@ name: Job Scraper Cron
 
 on:
   schedule:
-    - cron: '0 0,12 * * *' # Runs at 00:00 and 12:00 UTC
-  workflow_dispatch: # Allows manual trigger
+    # 03:30 UTC is 09:00 AM IST
+    # 15:30 UTC is 09:00 PM IST
+    - cron: '30 3,15 * * *'
+  workflow_dispatch:
 
 jobs:
   scrape:
@@ -19,10 +21,11 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -r requirements.txt
+          pip install pandas numpy requests jobspy supabase
 
       - name: Run scraper
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          AERIE_SHEET_URL: ${{ secrets.AERIE_SHEET_URL }}
         run: python scraper.py
