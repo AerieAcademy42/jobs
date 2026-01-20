@@ -5,7 +5,7 @@ on:
     # 03:30 UTC is 09:00 AM IST
     # 15:30 UTC is 09:00 PM IST
     - cron: '30 3,15 * * *'
-  workflow_dispatch:
+  workflow_dispatch: # Allows you to run it manually to test
 
 jobs:
   scrape:
@@ -21,7 +21,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pandas numpy requests jobspy supabase
+          python -m pip install --upgrade pip
+          pip install python-jobspy pandas numpy requests supabase
 
       - name: Run scraper
         env:
