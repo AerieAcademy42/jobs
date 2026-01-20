@@ -8,106 +8,102 @@ from datetime import datetime, timezone
 from jobspy import scrape_jobs
 from supabase import create_client, Client
 
-# 1. Connection
 supabase: Client = create_client(os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_KEY"))
 
-# Queries including Govt Architecture/Planning exams
+# Keywords to EXCLUDE (to stop AI/Software jobs)
+BLACKLIST = ["software", "developer", "python", "javascript", "java", "ai developer", "engineer -", "fin crime"]
+
 SEARCH_QUERIES = [
     "Architectural Assistant India",
-    "Junior Architect Government India",
-    "CPWD Architecture Recruitment",
-    "ISRO Architect Jobs",
-    "DDA Planning Assistant",
-    "Architecture Recruitment Board",
-    "Public Service Commission Architect India"
+    "Junior Architect India",
+    "Landscape Architect India",
+    "Interior Designer India",
+    "CPWD Architect Recruitment", # Govt
+    "DDA Planning Assistant"      # Govt
 ]
 
-def clean_salary_text(val):
-    """Prevents double Rupee signs by stripping old ones first"""
+def is_valid_arch_job(title):
+    title_lower = str(title).lower()
+    # If title contains blacklisted IT words, reject it
+    if any(word in title_lower for word in BLACKLIST):
+        return False
+    # Ensure it's architecture related
+    valid_keywords = ["arch", "interior", "design", "urban", "bim", "drafter", "planner"]
+    return any(word in title_lower for word in valid_keywords)
+
+def clean_salary(val):
     if not val or str(val).lower() == "nan": return "Not specified"
-    # Strip ₹, INR, Rs., Rs and spaces
     cleaned = str(val).replace('₹', '').replace('INR', '').replace('Rs.', '').replace('Rs', '').strip()
-    if not cleaned: return "Not specified"
     return f"₹{cleaned}"
 
-def clean_description(text):
-    """Removes ** stars and fixes alignment/spacing"""
-    if not text or str(text).lower() == "none": return ""
-    # Remove markdown stars
-    clean = str(text).replace('*', '')
-    # Remove HTML tags and collapse whitespace/newlines into one space
-    clean = re.sub('<[^<]+?>', '', clean)
-    clean = re.sub(r'\s+', ' ', clean).strip()
-    return clean[:1000]
+def clean_text(text):
+    if not text: return ""
+    clean = str(text).replace('*', '') # Remove Stars
+    return re.sub(r'\s+', ' ', clean).strip()[:1000]
 
-def import_aerie_manual_jobs():
-    """Imports Govt/Recommended jobs from Google Sheet"""
+def import_manual_and_govt():
+    """Imports from Sheet and labels them as Aerie Recommended or Govt Jobs"""
     csv_url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTtE8sIN-gq8QvZCrKCBxHe0iTRvjV-YCKg51R3xl83B0dJ56RwIsbImpvitQMqkiz1IW3m7mcQTuD0/pub?gid=717563757&single=true&output=csv"
     try:
-        response = requests.get(csv_url)
-        df = pd.read_csv(StringIO(response.text))
-        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
+        r = requests.get(csv_url)
+        df = pd.read_csv(StringIO(r.text))
+        now = datetime.now(timezone.utc).isoformat()
         for _, row in df.iterrows():
+            # Logic: If company includes Govt names, label as 'Govt Jobs'
+            # Otherwise 'Aerie Recommended'
+            comp = str(row.get('Company', ''))
+            source_label = "Govt Jobs" if "CPWD" in comp or "DDA" in comp or "ISRO" in comp else "Aerie Recommended"
+            
             job_data = {
                 "jobId": f"manual_{row.iloc[0]}",
-                "title": str(row.get('Job Title', 'Untitled')),
-                "companyName": str(row.get('Company', 'Aerie Recommended')),
+                "title": str(row.get('Job Title')),
+                "companyName": comp or "Aerie Recommended",
                 "location": str(row.get('Location', 'India')),
-                "salary": clean_salary_text(row.get('Salary')),
-                "postedDate": now_iso,
+                "salary": clean_salary(row.get('Salary')),
+                "postedDate": now,
                 "applyUrl": str(row.get('Apply Link')),
-                "source": "Aerie Recommended",
+                "source": source_label, 
                 "employmentType": "Full-time",
-                "discription": clean_description(row.get('Description', '')),
+                "discription": clean_text(row.get('Description')),
                 "industry": "Architecture",
-                "created_at": now_iso 
+                "created_at": now
             }
-            if job_data["title"] != 'nan':
-                supabase.table("jobs").upsert(job_data, on_conflict="jobId").execute()
-    except Exception as e:
-        print(f"Sheet Import Error: {e}")
+            supabase.table("jobs").upsert(job_data, on_conflict="jobId").execute()
+    except: pass
 
 def run_scraper():
-    all_jobs_list = []
-    for query in SEARCH_QUERIES:
+    all_jobs = []
+    for q in SEARCH_QUERIES:
         try:
-            # Added "google" to site_name and results_wanted to 100
             jobs = scrape_jobs(
                 site_name=["indeed", "linkedin", "google"],
-                search_term=query,
-                location="India",
-                results_wanted=100, 
-                hours_old=72, 
-                country_indeed='India'
+                search_term=q, location="India", results_wanted=100, country_indeed='India'
             )
-            if not jobs.empty: all_jobs_list.append(jobs)
+            if not jobs.empty: all_jobs.append(jobs)
         except: continue
 
-    if all_jobs_list:
-        df = pd.concat(all_jobs_list).drop_duplicates(subset=['id']).replace({np.nan: None})
-        current_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
+    if all_jobs:
+        df = pd.concat(all_jobs).drop_duplicates(subset=['id']).replace({np.nan: None})
+        now = datetime.now(timezone.utc).isoformat()
         for _, row in df.iterrows():
-            job_data = {
-                "jobId": str(row['id']),
-                "title": str(row['title']),
-                "companyName": str(row['company']) or "Not specified",
-                "location": str(row['location']) or "India",
-                "salary": clean_salary_text(row.get('min_amount')),
-                "postedDate": current_iso,
-                "applyUrl": str(row['job_url']),
-                "source": str(row['site']).capitalize(),
-                "employmentType": "Full-time",
-                "discription": clean_description(row.get('description', "")),
-                "industry": "Architecture",
-                "created_at": current_iso 
-            }
-            try:
-                supabase.table("jobs").upsert(job_data, on_conflict="jobId").execute()
-            except: pass
-
-    import_aerie_manual_jobs()
+            if is_valid_arch_job(row['title']): # Only keep Architecture jobs
+                job_data = {
+                    "jobId": str(row['id']),
+                    "title": str(row['title']),
+                    "companyName": str(row['company']) or "Not specified",
+                    "location": str(row['location']) or "India",
+                    "salary": clean_salary(row.get('min_amount')),
+                    "postedDate": now,
+                    "applyUrl": str(row['job_url']),
+                    "source": str(row['site']).capitalize(),
+                    "employmentType": "Full-time",
+                    "discription": clean_text(row.get('description')),
+                    "industry": "Architecture",
+                    "created_at": now 
+                }
+                try: supabase.table("jobs").upsert(job_data, on_conflict="jobId").execute()
+                except: pass
+    import_manual_and_govt()
 
 if __name__ == "__main__":
     run_scraper()
