@@ -8,49 +8,34 @@ from datetime import datetime, timezone
 from jobspy import scrape_jobs
 from supabase import create_client, Client
 
-# 1. Connection
+# Connection
 supabase: Client = create_client(os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_KEY"))
 
 SEARCH_QUERIES = [
     "Architectural Assistant",
-    "Landscape Architecture Intern",
-    "Urban Planning Intern",
-    "Architectural Drafter",
     "Junior Architect",
-    "BIM Modeler",
-    "Interior Designer India"
+    "BIM Modeler India",
+    "Interior Designer India",
+    "Government Architecture Jobs India",  # Added Govt
+    "CPWD Architect Recruitment",          # Added Govt
+    "DDA Planning Assistant"               # Added Govt
 ]
 
 def clean_salary_text(val):
-    """Removes existing currency symbols to prevent double signs like ₹₹"""
     if not val or str(val).lower() == "nan": return "Not specified"
-    # Remove existing symbols/text so we can standardize
-    cleaned = str(val).replace('₹', '').replace('INR', '').replace('Rs.', '').strip()
-    # Handle cases where the text might still be empty after stripping
+    # Aggressively strip all known currency markers
+    cleaned = str(val).replace('₹', '').replace('INR', '').replace('Rs.', '').replace('Rs', '').strip()
     if not cleaned: return "Not specified"
     return f"₹{cleaned}"
 
-def extract_salary_from_text(text):
-    """Scans description for salary if not in official field"""
-    if not text: return None
-    patterns = [
-        r"(?:₹|INR|Rs\.?)\s?(\d+(?:,\d+)*(?:\s?-\s?\d+(?:,\d+)*)?)",
-        r"(\d+(?:\.\d+)?\s?LPA)",
-        r"(\d+k\s?-\s?\d+k)",
-        r"Salary[:\s]+(\d+(?:,\d+)*)"
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            return clean_salary_text(match.group(0))
-    return None
-
-def clean_description_text(text):
-    """Fixes alignment by removing extra whitespace/newlines"""
+def clean_text_formatting(text):
+    """Removes ** stars, fixes alignment, removes extra whitespace"""
     if not text or str(text).lower() == "none": return ""
-    # Remove HTML tags
-    clean = re.sub('<[^<]+?>', '', str(text))
-    # Replace all whitespace (tabs, newlines, multiple spaces) with a single space
+    # Remove stars (markdown)
+    clean = str(text).replace('*', '')
+    # Remove HTML
+    clean = re.sub('<[^<]+?>', '', clean)
+    # Collapse all newlines and tabs into a single space
     clean = re.sub(r'\s+', ' ', clean).strip()
     return clean[:1000]
 
@@ -61,62 +46,38 @@ def clean_employment_type(job_type):
     return 'Full-time'
 
 def import_aerie_manual_jobs():
-    """Imports from Google Sheet CSV and maps to your Supabase keys"""
-    csv_url = os.environ.get("AERIE_SHEET_URL")
-    if not csv_url:
-        print("Aerie URL not set in GitHub Secrets.")
-        return
-
+    """Imports Govt/Recommended jobs from your Google Sheet"""
+    csv_url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTtE8sIN-gq8QvZCrKCBxHe0iTRvjV-YCKg51R3xl83B0dJ56RwIsbImpvitQMqkiz1IW3m7mcQTuD0/pub?gid=717563757&single=true&output=csv"
     try:
         response = requests.get(csv_url)
-        # Use pandas to read the CSV
         df = pd.read_csv(StringIO(response.text))
-        
-        # If there are duplicate "Timestamp" columns, we rename them to be unique
-        # This solves your "Timestamp twice" issue
-        cols = []
-        count = {}
-        for column in df.columns:
-            if column in count:
-                count[column] += 1
-                cols.append(f"{column}_{count[column]}")
-            else:
-                count[column] = 0
-                cols.append(column)
-        df.columns = cols
-
         now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         for _, row in df.iterrows():
-            # We use row.get() with the exact column names from your Sheet
             job_data = {
-                "jobId": f"manual_{row.iloc[0]}", # Uses the very first column (Automatic Timestamp)
+                "jobId": f"manual_{row.iloc[0]}",
                 "title": str(row.get('Job Title', 'Untitled')),
-                "companyName": str(row.get('Company', 'Not specified')),
+                "companyName": str(row.get('Company', 'Aerie Recommended')),
                 "location": str(row.get('Location', 'India')),
-                "salary": clean_salary_text(row.get('Salary', 'Not specified')),
+                "salary": clean_salary_text(row.get('Salary')),
                 "postedDate": now_iso,
                 "applyUrl": str(row.get('Apply Link', '')),
-                "source": "Aerie",
+                "source": "Aerie Recommended", # Updated Source Name
                 "employmentType": clean_employment_type(row.get('Type', 'Full-time')),
-                "discription": clean_description_text(row.get('Description', '')),
+                "discription": clean_text_formatting(row.get('Description', '')),
                 "industry": "Architecture",
                 "created_at": now_iso 
             }
-            # Only upsert if there is a title
-            if job_data["title"] != 'nan' and job_data["applyUrl"] != 'nan':
+            if job_data["title"] != 'nan':
                 supabase.table("jobs").upsert(job_data, on_conflict="jobId").execute()
-        
-        print("Aerie manual jobs processing finished.")
     except Exception as e:
-        print(f"Aerie Import Error: {e}")
+        print(f"Sheet Error: {e}")
 
 def run_scraper():
     all_jobs_list = []
     for query in SEARCH_QUERIES:
-        print(f"Searching {query}...")
         try:
-            # 100 results per query
+            # results_wanted=100, includes google
             jobs = scrape_jobs(
                 site_name=["indeed", "linkedin", "google"],
                 search_term=query,
@@ -127,61 +88,39 @@ def run_scraper():
             )
             if not jobs.empty:
                 all_jobs_list.append(jobs)
-        except Exception as e:
-            print(f"Scraper Error for {query}: {e}")
+        except:
+            continue
 
     if all_jobs_list:
         df = pd.concat(all_jobs_list).drop_duplicates(subset=['id']).replace({np.nan: None})
-        now = datetime.now(timezone.utc)
-        current_iso = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        current_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         for _, row in df.iterrows():
-            # Salary Fix: Prevent double rupee
+            # Salary strip logic
             official_salary = None
             if row.get('min_amount'):
-                # Strip existing symbols before adding our own
-                min_val = str(row['min_amount']).replace('₹', '').replace('INR', '').strip()
-                official_salary = f"₹{min_val}"
-                if row.get('max_amount'):
-                    max_val = str(row['max_amount']).replace('₹', '').replace('INR', '').strip()
-                    official_salary += f" - {max_val}"
+                min_s = str(row['min_amount']).replace('₹', '').replace('INR', '').strip()
+                official_salary = f"₹{min_s}"
             
-            desc_raw = str(row.get('description', ""))
-            found_salary = extract_salary_from_text(desc_raw)
-            salary_to_show = official_salary if official_salary else (found_salary if found_salary else "Not specified")
-
-            # Description alignment fix
-            clean_desc = clean_description_text(desc_raw)
-            if len(clean_desc) < 20:
-                clean_desc = f"Architecture opportunity at {row['company']}. Please visit the link for full details."
-
-            # Date Logic
-            try:
-                posted_date = pd.to_datetime(row['date_posted']).strftime("%Y-%m-%dT%H:%M:%SZ") if row.get('date_posted') else current_iso
-            except:
-                posted_date = current_iso
-
             job_data = {
                 "jobId": str(row['id']),
                 "title": str(row['title']),
-                "companyName": str(row['company']) if row['company'] else "Not specified",
-                "location": str(row['location']) if row['location'] else "India",
-                "salary": salary_to_show,
-                "postedDate": posted_date,
+                "companyName": str(row['company']) or "Not specified",
+                "location": str(row['location']) or "India",
+                "salary": official_salary or "Not specified",
+                "postedDate": current_iso,
                 "applyUrl": str(row['job_url']),
                 "source": str(row['site']).capitalize(),
                 "employmentType": clean_employment_type(row.get('job_type', "")),
-                "discription": clean_desc,
+                "discription": clean_text_formatting(row.get('description', "")),
                 "industry": "Architecture",
                 "created_at": current_iso 
             }
-
             try:
                 supabase.table("jobs").upsert(job_data, on_conflict="jobId").execute()
-            except Exception:
+            except:
                 pass
 
-    # Run the manual import from Google Sheets
     import_aerie_manual_jobs()
 
 if __name__ == "__main__":
