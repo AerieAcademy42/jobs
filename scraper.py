@@ -9,6 +9,7 @@ from jobspy import scrape_jobs
 from supabase import create_client, Client
 
 # --- CONFIGURATION ---
+# Ensure you have these in your .env or environment variables
 supabase: Client = create_client(os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_KEY"))
 
 # Strict filter to stop AI/IT jobs from automated scraper
@@ -49,34 +50,27 @@ def clean_text(text):
 def is_valid_field(val):
     """Checks if a Google Sheet cell actually has data"""
     if val is None: return False
-    if pd.isna(val): return False  # Handles NaN/None from pandas
+    if pd.isna(val): return False
     s = str(val).strip().lower()
     return s not in ["", "nan", "none", "null"]
 
 def format_govt_description(desc, seats, exams, opening_date):
-    """
-    Builds a custom description for Govt jobs.
-    Only adds lines if the data actually exists in the sheet.
-    """
+    """Builds a custom description for Govt jobs."""
     header = ""
-    
     if is_valid_field(opening_date):
         header += f"📅 **Opening Date:** {str(opening_date).strip()}\n"
-    
     if is_valid_field(seats):
         header += f"🪑 **Number of Seats:** {str(seats).strip()}\n"
-        
     if is_valid_field(exams):
         header += f"📝 **Exam/Selection:** {str(exams).strip()}\n"
     
     base_desc = clean_text(desc)
-    
     if header:
         return f"{header}\n---\n{base_desc}"
     return base_desc
 
 def import_google_sheet():
-    # Your specific Sheet ID and GID
+    # Update with your specific Sheet ID and GID
     SHEET_ID = "1JAnklMpeGZYnhqvJk5LcUJngpkFgjnM9yfsacoFIX5Y"
     GID = "717563757"
     csv_url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={GID}"
@@ -86,41 +80,36 @@ def import_google_sheet():
         r = requests.get(csv_url)
         r.raise_for_status()
         
-        # Read CSV, ensure all columns are treated as strings to prevent errors
+        # Read CSV, ensure all columns are strings
         df = pd.read_csv(StringIO(r.text), dtype=str)
-        
-        # Clean column names (remove extra spaces like "Type " -> "Type")
         df.columns = df.columns.str.strip()
         
         now = datetime.now(timezone.utc).isoformat()
-        
         count = 0
+        
         for index, row in df.iterrows():
-            # Skip if Job Title or Apply Link is missing
             if not is_valid_field(row.get('Job Title')) or not is_valid_field(row.get('Apply Link')):
                 continue
 
             title = str(row.get('Job Title')).strip()
             comp = str(row.get('Company', 'Aerie Academy')).strip()
             
-            # --- Source Detection Logic ---
-            # If Company name has "CPWD", "Govt", etc -> Source = Govt Jobs
-            # Otherwise -> Source = Aerie Recommended
+            # --- Source Logic ---
             is_govt = any(k in comp.upper() for k in GOVT_KEYWORDS)
             
+            # UNIFIED SOURCE NAMES HERE
             if is_govt:
-                source_label = "Govt / Public Sector"
-                # Extract extra columns safely
-                seats = row.get('Seats')
-                exams = row.get('Exams')
-                opening_date = row.get('Opening Date')
-                
-                final_desc = format_govt_description(row.get('Description'), seats, exams, opening_date)
+                source_label = "Govt Jobs"
+                final_desc = format_govt_description(
+                    row.get('Description'), 
+                    row.get('Seats'), 
+                    row.get('Exams'), 
+                    row.get('Opening Date')
+                )
             else:
                 source_label = "Aerie Recommended"
                 final_desc = clean_text(row.get('Description'))
 
-            # Generate ID based on Link (avoids duplicates)
             unique_id = f"manual_{abs(hash(row.get('Apply Link')))}"
 
             job_data = {
@@ -133,7 +122,7 @@ def import_google_sheet():
                 "applyUrl": str(row.get('Apply Link')),
                 "source": source_label,
                 "employmentType": str(row.get('Type', 'Full-time')),
-                "discription": final_desc, # Typo matches your DB column
+                "discription": final_desc,
                 "industry": "Architecture",
                 "created_at": now
             }
@@ -156,12 +145,11 @@ def run_scraper():
     # 1. Automated Scrape (JobSpy)
     for q in SEARCH_QUERIES:
         try:
-            # Added Glassdoor
             jobs = scrape_jobs(
                 site_name=["indeed", "linkedin", "glassdoor"], 
                 search_term=q, 
                 location="India", 
-                results_wanted=20, # Keeping it low for speed, increase if needed
+                results_wanted=15, 
                 hours_old=72
             )
             if not jobs.empty: all_jobs.append(jobs)
@@ -176,10 +164,14 @@ def run_scraper():
         for _, row in df.iterrows():
             if is_valid_architecture_job(row['title']):
                 
-                # Auto-detect Govt jobs from scraped data too
                 comp_name = str(row['company'])
                 is_scraped_govt = any(k in comp_name.upper() for k in GOVT_KEYWORDS)
-                source = "Public Sector" if is_scraped_govt else str(row['site']).capitalize()
+                
+                # Use standard source names
+                if is_scraped_govt:
+                    source = "Govt Jobs"
+                else:
+                    source = str(row['site']).capitalize() # Indeed, Linkedin, etc.
 
                 job_data = {
                     "jobId": str(row['id']),
@@ -199,7 +191,7 @@ def run_scraper():
                     supabase.table("jobs").upsert(job_data, on_conflict="jobId").execute()
                 except: pass
     
-    # 2. & 3. Run the Manual Sheet Import
+    # 2. Run Manual Sheet Import
     print("--- Starting Manual Sheet Import ---")
     import_google_sheet()
     print("--- Finished ---")
