@@ -9,7 +9,6 @@ from jobspy import scrape_jobs
 from supabase import create_client, Client
 
 # --- CONFIGURATION ---
-# Ensure you have these in your .env or environment variables
 supabase: Client = create_client(os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_KEY"))
 
 # Strict filter to stop AI/IT jobs from automated scraper
@@ -25,7 +24,7 @@ SEARCH_QUERIES = [
     "Interior Designer recruitment"
 ]
 
-# If the Company Name in your Google Sheet contains these, it becomes a "Govt" job
+# Keywords to detect Government jobs
 GOVT_KEYWORDS = ["CPWD", "DDA", "ISRO", "NBCC", "UPSC", "MUNICIPAL", "CORPORATION", "GOVT", "PUBLIC WORKS", "AUTHORITY", "COUNCIL", "RAILWAY"]
 
 def is_valid_architecture_job(title):
@@ -55,7 +54,7 @@ def is_valid_field(val):
     return s not in ["", "nan", "none", "null"]
 
 def format_govt_description(desc, seats, exams, opening_date):
-    """Builds a custom description for Govt jobs."""
+    """Builds a custom description for Govt jobs with extra metadata."""
     header = ""
     if is_valid_field(opening_date):
         header += f"📅 **Opening Date:** {str(opening_date).strip()}\n"
@@ -70,7 +69,7 @@ def format_govt_description(desc, seats, exams, opening_date):
     return base_desc
 
 def import_google_sheet():
-    # Update with your specific Sheet ID and GID
+    # Your Sheet ID
     SHEET_ID = "1JAnklMpeGZYnhqvJk5LcUJngpkFgjnM9yfsacoFIX5Y"
     GID = "717563757"
     csv_url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={GID}"
@@ -80,7 +79,6 @@ def import_google_sheet():
         r = requests.get(csv_url)
         r.raise_for_status()
         
-        # Read CSV, ensure all columns are strings
         df = pd.read_csv(StringIO(r.text), dtype=str)
         df.columns = df.columns.str.strip()
         
@@ -94,12 +92,12 @@ def import_google_sheet():
             title = str(row.get('Job Title')).strip()
             comp = str(row.get('Company', 'Aerie Academy')).strip()
             
-            # --- Source Logic ---
+            # --- Source Detection ---
             is_govt = any(k in comp.upper() for k in GOVT_KEYWORDS)
             
-            # UNIFIED SOURCE NAMES HERE
+            # UNIFIED SOURCE NAMES
             if is_govt:
-                source_label = "Govt Jobs"
+                source_label = "Govt Jobs" # Standardized name
                 final_desc = format_govt_description(
                     row.get('Description'), 
                     row.get('Seats'), 
@@ -107,7 +105,7 @@ def import_google_sheet():
                     row.get('Opening Date')
                 )
             else:
-                source_label = "Aerie Recommended"
+                source_label = "Aerie Recommended" # Standardized name
                 final_desc = clean_text(row.get('Description'))
 
             unique_id = f"manual_{abs(hash(row.get('Apply Link')))}"
@@ -122,7 +120,7 @@ def import_google_sheet():
                 "applyUrl": str(row.get('Apply Link')),
                 "source": source_label,
                 "employmentType": str(row.get('Type', 'Full-time')),
-                "discription": final_desc,
+                "discription": final_desc, # Matches your DB schema typo
                 "industry": "Architecture",
                 "created_at": now
             }
@@ -167,9 +165,9 @@ def run_scraper():
                 comp_name = str(row['company'])
                 is_scraped_govt = any(k in comp_name.upper() for k in GOVT_KEYWORDS)
                 
-                # Use standard source names
+                # UNIFIED SOURCE NAMES for Scraped Content
                 if is_scraped_govt:
-                    source = "Govt Jobs"
+                    source = "Govt Jobs" # Groups with the sheet jobs
                 else:
                     source = str(row['site']).capitalize() # Indeed, Linkedin, etc.
 
